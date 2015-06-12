@@ -2,7 +2,7 @@ package org.embulk.output;
 
 import com.google.common.base.Optional;
 import com.google.common.base.Throwables;
-import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.inject.Inject;
 import org.elasticsearch.action.bulk.BulkItemResponse;
 import org.elasticsearch.action.bulk.BulkProcessor;
@@ -13,14 +13,11 @@ import org.elasticsearch.client.Client;
 import org.elasticsearch.client.Requests;
 import org.elasticsearch.client.transport.TransportClient;
 import org.elasticsearch.common.unit.ByteSizeValue;
-import org.elasticsearch.common.unit.ByteSizeUnit;
 import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.transport.InetSocketTransportAddress;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
-import org.elasticsearch.node.Node;
-import org.elasticsearch.node.NodeBuilder;
 import org.embulk.config.CommitReport;
 import org.embulk.config.Config;
 import org.embulk.config.ConfigDefault;
@@ -42,16 +39,15 @@ import org.slf4j.Logger;
 import java.io.IOException;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static com.google.common.base.Preconditions.checkState;
 
 public class ElasticsearchOutputPlugin
-        implements OutputPlugin
-{
+        implements OutputPlugin {
     public interface NodeAddressTask
-            extends Task
-    {
+            extends Task {
         @Config("host")
         public String getHost();
 
@@ -60,11 +56,29 @@ public class ElasticsearchOutputPlugin
         public int getPort();
     }
 
+    public interface ValueCustomizeTask
+            extends Task {
+
+        @Config("name")
+        public String getName();
+
+        @Config("type")
+        @ConfigDefault("\"array\"")
+        public String getType();
+
+        @Config("separator")
+        @ConfigDefault("\" \"")
+        public String getValueSepatator();
+    }
+
     public interface PluginTask
-            extends Task
-    {
+            extends Task {
         @Config("nodes")
         public List<NodeAddressTask> getNodes();
+
+        @Config("value_customize")
+        @ConfigDefault("null")
+        public Optional<List<ValueCustomizeTask>> getValueCustomizeTasks();
 
         @Config("cluster_name")
         @ConfigDefault("\"elasticsearch\"")
@@ -99,15 +113,13 @@ public class ElasticsearchOutputPlugin
     private final Logger log;
 
     @Inject
-    public ElasticsearchOutputPlugin()
-    {
+    public ElasticsearchOutputPlugin() {
         log = Exec.getLogger(getClass());
     }
 
     @Override
     public ConfigDiff transaction(ConfigSource config, Schema schema,
-                                  int processorCount, Control control)
-    {
+                                  int processorCount, Control control) {
         final PluginTask task = config.loadConfig(PluginTask.class);
 
         // confirm that a client can be initialized
@@ -141,11 +153,19 @@ public class ElasticsearchOutputPlugin
         return nextConfig;
     }
 
+    private ValueCustomizers.ValueCustomizer createValueCustomizer(ValueCustomizeTask t) {
+        if (t.getType().equals("int_array")) {
+            return new ValueCustomizers.IntArray(t.getValueSepatator());
+        }
+        // TODO support other types
+        throw new IllegalArgumentException(String.format("Unknown value customize format '%s'",
+                t.getType()));
+    }
+
     @Override
-    public  ConfigDiff resume(TaskSource taskSource,
+    public ConfigDiff resume(TaskSource taskSource,
                              Schema schema, int processorCount,
-                             OutputPlugin.Control control)
-    {
+                             OutputPlugin.Control control) {
         //  TODO
         return Exec.newConfigDiff();
     }
@@ -153,11 +173,10 @@ public class ElasticsearchOutputPlugin
     @Override
     public void cleanup(TaskSource taskSource,
                         Schema schema, int processorCount,
-                        List<CommitReport> successCommitReports)
-    { }
+                        List<CommitReport> successCommitReports) {
+    }
 
-    private Client createClient(final PluginTask task)
-    {
+    private Client createClient(final PluginTask task) {
         //  @see http://www.elasticsearch.org/guide/en/elasticsearch/client/java-api/current/client.html
         Settings settings = ImmutableSettings.settingsBuilder()
                 .classLoader(Settings.class.getClassLoader())
@@ -171,18 +190,15 @@ public class ElasticsearchOutputPlugin
         return client;
     }
 
-    private BulkProcessor newBulkProcessor(final PluginTask task, final Client client)
-    {
+    private BulkProcessor newBulkProcessor(final PluginTask task, final Client client) {
         return BulkProcessor.builder(client, new BulkProcessor.Listener() {
             @Override
-            public void beforeBulk(long executionId, BulkRequest request)
-            {
+            public void beforeBulk(long executionId, BulkRequest request) {
                 log.info("Execute {} bulk actions", request.numberOfActions());
             }
 
             @Override
-            public void afterBulk(long executionId, BulkRequest request, BulkResponse response)
-            {
+            public void afterBulk(long executionId, BulkRequest request, BulkResponse response) {
                 if (response.hasFailures()) {
                     long items = 0;
                     if (log.isDebugEnabled()) {
@@ -202,35 +218,43 @@ public class ElasticsearchOutputPlugin
             }
 
             @Override
-            public void afterBulk(long executionId, BulkRequest request, Throwable failure)
-            {
+            public void afterBulk(long executionId, BulkRequest request, Throwable failure) {
                 log.warn("Got the error during bulk processing", failure);
             }
         }).setBulkActions(task.getBulkActions())
-          .setBulkSize(new ByteSizeValue(task.getBulkSize()))
-          .setConcurrentRequests(task.getConcurrentRequests())
-          .build();
+                .setBulkSize(new ByteSizeValue(task.getBulkSize()))
+                .setConcurrentRequests(task.getConcurrentRequests())
+                .build();
     }
 
     @Override
     public TransactionalPageOutput open(TaskSource taskSource, Schema schema,
-                                        int processorIndex)
-    {
+                                        int processorIndex) {
         final PluginTask task = taskSource.loadTask(PluginTask.class);
+
+        ImmutableMap.Builder<String, ValueCustomizers.ValueCustomizer> valueCustomizerMap =
+                ImmutableMap.builder();
+        if (task.getValueCustomizeTasks().isPresent()) {
+            for (ValueCustomizeTask vct : task.getValueCustomizeTasks().get()) {
+                valueCustomizerMap.put(vct.getName(), createValueCustomizer(vct));
+            }
+        }
 
         Client client = createClient(task);
         BulkProcessor bulkProcessor = newBulkProcessor(task, client);
-        ElasticsearchPageOutput pageOutput = new ElasticsearchPageOutput(task, client, bulkProcessor);
+        ElasticsearchPageOutput pageOutput = new ElasticsearchPageOutput(task, client, bulkProcessor,
+                valueCustomizerMap.build());
         pageOutput.open(schema);
         return pageOutput;
     }
 
-    static class ElasticsearchPageOutput implements TransactionalPageOutput
-    {
+
+    static class ElasticsearchPageOutput implements TransactionalPageOutput {
         private Logger log;
 
         private Client client;
         private BulkProcessor bulkProcessor;
+        private Map<String, ValueCustomizers.ValueCustomizer> valueCustomizers;
 
         private PageReader pageReader;
 
@@ -238,26 +262,25 @@ public class ElasticsearchOutputPlugin
         private final String type;
         private final Optional<Integer> idColumnIndex;
 
-        ElasticsearchPageOutput(PluginTask task, Client client, BulkProcessor bulkProcessor)
-        {
+        ElasticsearchPageOutput(PluginTask task, Client client, BulkProcessor bulkProcessor,
+                                Map<String, ValueCustomizers.ValueCustomizer> valueCustomizers) {
             this.log = Exec.getLogger(getClass());
 
             this.client = client;
             this.bulkProcessor = bulkProcessor;
+            this.valueCustomizers = valueCustomizers;
 
             this.index = task.getIndex();
             this.type = task.getType();
             this.idColumnIndex = task.getIdColumnIndex();
         }
 
-        void open(final Schema schema)
-        {
+        void open(final Schema schema) {
             pageReader = new PageReader(schema);
         }
 
         @Override
-        public void add(Page page)
-        {
+        public void add(Page page) {
             pageReader.setPage(page);
 
             while (pageReader.nextRecord()) {
@@ -317,15 +340,19 @@ public class ElasticsearchOutputPlugin
 
                         @Override
                         public void stringColumn(Column column) {
+                            final String name = column.getName();
                             try {
                                 if (pageReader.isNull(column)) {
-                                    contextBuilder.nullField(column.getName());
+                                    contextBuilder.nullField(name);
+                                } else if (valueCustomizers.containsKey(name)) {
+                                    valueCustomizers.get(name).customize(name,
+                                            pageReader.getString(column), contextBuilder);
                                 } else {
-                                    contextBuilder.field(column.getName(), pageReader.getString(column));
+                                    contextBuilder.field(name, pageReader.getString(column));
                                 }
                             } catch (IOException e) {
                                 try {
-                                    contextBuilder.nullField(column.getName());
+                                    contextBuilder.nullField(name);
                                 } catch (IOException ex) {
                                     throw Throwables.propagate(ex);
                                 }
@@ -387,8 +414,7 @@ public class ElasticsearchOutputPlugin
         }
 
         @Override
-        public void finish()
-        {
+        public void finish() {
             try {
                 bulkProcessor.flush();
             } finally {
@@ -397,8 +423,7 @@ public class ElasticsearchOutputPlugin
         }
 
         @Override
-        public void close()
-        {
+        public void close() {
             if (bulkProcessor != null) {
                 try {
                     while (!bulkProcessor.awaitClose(3, TimeUnit.SECONDS)) {
@@ -417,14 +442,12 @@ public class ElasticsearchOutputPlugin
         }
 
         @Override
-        public void abort()
-        {
+        public void abort() {
             //  TODO do nothing
         }
 
         @Override
-        public CommitReport commit()
-        {
+        public CommitReport commit() {
             CommitReport report = Exec.newCommitReport();
             //  TODO
             return report;

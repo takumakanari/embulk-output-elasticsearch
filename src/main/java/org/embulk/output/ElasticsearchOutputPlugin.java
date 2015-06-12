@@ -63,11 +63,11 @@ public class ElasticsearchOutputPlugin
         public String getName();
 
         @Config("type")
-        @ConfigDefault("\"array\"")
+        @ConfigDefault("\"string_array\"")
         public String getType();
 
         @Config("separator")
-        @ConfigDefault("\" \"")
+        @ConfigDefault("\",\"")
         public String getValueSepatator();
     }
 

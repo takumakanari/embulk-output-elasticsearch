@@ -153,15 +153,6 @@ public class ElasticsearchOutputPlugin
         return nextConfig;
     }
 
-    private ValueCustomizers.ValueCustomizer createValueCustomizer(ValueCustomizeTask t) {
-        if (t.getType().equals("int_array")) {
-            return new ValueCustomizers.IntArray(t.getValueSepatator());
-        }
-        // TODO support other types
-        throw new IllegalArgumentException(String.format("Unknown value customize format '%s'",
-                t.getType()));
-    }
-
     @Override
     public ConfigDiff resume(TaskSource taskSource,
                              Schema schema, int processorCount,
@@ -236,7 +227,7 @@ public class ElasticsearchOutputPlugin
                 ImmutableMap.builder();
         if (task.getValueCustomizeTasks().isPresent()) {
             for (ValueCustomizeTask vct : task.getValueCustomizeTasks().get()) {
-                valueCustomizerMap.put(vct.getName(), createValueCustomizer(vct));
+                valueCustomizerMap.put(vct.getName(), ValueCustomizers.create(vct));
             }
         }
 

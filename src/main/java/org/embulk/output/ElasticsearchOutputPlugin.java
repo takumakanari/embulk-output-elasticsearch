@@ -36,6 +36,7 @@ import org.embulk.spi.PageReader;
 import org.embulk.spi.Schema;
 import org.embulk.spi.ColumnVisitor;
 import org.embulk.spi.TransactionalPageOutput;
+import org.embulk.spi.type.*;
 import org.slf4j.Logger;
 
 import java.io.IOException;
@@ -90,6 +91,9 @@ public class ElasticsearchOutputPlugin
         @Config("concurrent_requests")
         @ConfigDefault("5")
         public int getConcurrentRequests();
+
+        public void setIdColumnIndex(Optional<Integer> idColumnIndex);
+        public Optional<Integer> getIdColumnIndex();
     }
 
     private final Logger log;
@@ -114,8 +118,10 @@ public class ElasticsearchOutputPlugin
         if (task.getId().isPresent()) {
             String id = task.getId().get();
             boolean found = false;
-            for (Column column : schema.getColumns()) {
-                if (column.equals(id)) {
+            for (int i = 0; i < schema.getColumns().size(); i++) {
+                Column column = schema.getColumn(i);
+                if (column.getName().equals(id)) {
+                    task.setIdColumnIndex(Optional.of(i));
                     found = true;
                 }
             }
@@ -227,7 +233,7 @@ public class ElasticsearchOutputPlugin
 
         private final String index;
         private final String type;
-        private final String id;
+        private final Optional<Integer> idColumnIndex;
 
         ElasticsearchPageOutput(PluginTask task, Client client, BulkProcessor bulkProcessor)
         {
@@ -238,7 +244,7 @@ public class ElasticsearchOutputPlugin
 
             this.index = task.getIndex();
             this.type = task.getType();
-            this.id = task.getId().orNull();
+            this.idColumnIndex = task.getIdColumnIndex();
         }
 
         void open(final Schema schema)
@@ -342,7 +348,7 @@ public class ElasticsearchOutputPlugin
                     });
 
                     contextBuilder.endObject();
-                    bulkProcessor.add(newIndexRequest().source(contextBuilder));
+                    bulkProcessor.add(newIndexRequest(id(pageReader)).source(contextBuilder));
 
                 } catch (IOException e) {
                     Throwables.propagate(e); //  TODO error handling
@@ -350,9 +356,31 @@ public class ElasticsearchOutputPlugin
             }
         }
 
-        private IndexRequest newIndexRequest()
+        private IndexRequest newIndexRequest(String id)
         {
             return Requests.indexRequest(index).type(type).id(id);
+        }
+
+        private String id(PageReader pageReader)
+        {
+            if (!idColumnIndex.isPresent()) {
+                return null;
+            }
+            final Column c = pageReader.getSchema().getColumn(idColumnIndex.get());
+            if (pageReader.isNull(c)) {
+                return null;
+            }
+            final Type type = c.getType();
+            if (type instanceof StringType) {
+                return pageReader.getString(c);
+            } else if (type instanceof LongType) {
+                return Long.toString(pageReader.getLong(c));
+            } else if (type instanceof DoubleType) {
+                return Double.toString(pageReader.getDouble(c));
+            } else if (type instanceof TimestampType) {
+                return pageReader.getTimestamp(c).toString();
+            }
+            throw new UnsupportedOperationException(String.format("can't handle ID from type '%s'", type));
         }
 
         @Override

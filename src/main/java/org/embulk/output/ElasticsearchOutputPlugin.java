@@ -126,6 +126,9 @@ public class ElasticsearchOutputPlugin
                 }
             }
             checkState(found, "id is not included in column names of the Schema.");
+        } else {
+            Optional<Integer> empty = Optional.absent();
+            task.setIdColumnIndex(empty);
         }
 
         try {

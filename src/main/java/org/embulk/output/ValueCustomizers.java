@@ -38,9 +38,8 @@ public class ValueCustomizers {
         public void customize(String name, String v, XContentBuilder builder)
                 throws IOException {
             String[] vs = v.split(separator);
-            final Object[] dest = new Integer[vs.length];
+            final Object[] dest = new Object[vs.length];
             for (int i = 0; i < vs.length; i++) {
-                //dest[i] = Integer.parseInt(vs[i]);
                 dest[i] = convet(vs[i], valueType);
             }
             builder.array(name, dest);

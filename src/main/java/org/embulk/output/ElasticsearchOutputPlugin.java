@@ -63,12 +63,21 @@ public class ElasticsearchOutputPlugin
         public String getName();
 
         @Config("type")
-        @ConfigDefault("\"string_array\"")
+        @ConfigDefault("\"array\"")
         public String getType();
 
         @Config("separator")
         @ConfigDefault("\",\"")
-        public String getValueSepatator();
+        public String getItemSepatator();
+
+        @Config("key_separator")
+        @ConfigDefault("\":\"")
+        public String getKeySeparator();
+
+        @Config("value_type")
+        @ConfigDefault("\"string\"")
+        public String getValueType();
+
     }
 
     public interface PluginTask

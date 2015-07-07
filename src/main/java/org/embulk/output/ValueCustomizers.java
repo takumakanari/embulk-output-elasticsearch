@@ -64,7 +64,7 @@ public class ValueCustomizers {
             for (String pair : v.split(itemSeparator)) {
                 final String[] kv = pair.split(this.keySeparator);
                 if (kv.length != 2) {
-                    throw new IllegalArgumentException(String.format("can not separate '%s' to key/value", pair));
+                    throw new IllegalArgumentException(String.format("can not separate '%s' of %s '%s' to key/value", pair, name, v));
                 }
                 dest.put(kv[0], convet(kv[1], valueType));
             }
